@@ -2,6 +2,7 @@ from typing import List, Tuple, Union
 
 from rdkit import Chem
 import torch
+from rdkit.Chem.rdmolops import GetDistanceMatrix
 
 # Atom feature sizes
 MAX_ATOMIC_NUM = 100
@@ -120,6 +121,7 @@ class MolGraph:
     - a2b: A mapping from an atom index to a list of incoming bond indices.
     - b2a: A mapping from a bond index to the index of the atom the bond originates from.
     - b2revb: A mapping from a bond index to the index of the reverse bond.
+    - matrix: A matrix of atom pair distances.
     """
 
     def __init__(self, mol: Union[str, Chem.Mol]):
@@ -139,6 +141,7 @@ class MolGraph:
         self.a2b = []  # mapping from atom index to incoming bond indices
         self.b2a = []  # mapping from bond index to the index of the atom the bond is coming from
         self.b2revb = []  # mapping from bond index to the index of the reverse bond
+        self.matrix = [] # A list of list of atom pair distances. 
 
         # Get atom features
         self.f_atoms = [atom_features(atom) for atom in mol.GetAtoms()]
@@ -171,7 +174,11 @@ class MolGraph:
                 self.b2revb.append(b1)
                 self.n_bonds += 2
 
-
+        # Get atom pair distance vector
+        matrix=GetDistanceMatrix(mol)
+        for a1 in range(self.n_atoms):
+            self.matrix.append(matrix[a1].tolist())
+            
 class BatchMolGraph:
     """
     A BatchMolGraph represents the graph structure and featurization of a batch of molecules.
@@ -184,6 +191,7 @@ class BatchMolGraph:
     - max_num_bonds: The maximum number of bonds neighboring an atom in this batch.
     - b2b: (Optional) A mapping from a bond index to incoming bond indices.
     - a2a: (Optional): A mapping from an atom index to neighboring atom indices.
+    - matrix: A matrix of atom pair distances.
     """
 
     def __init__(self, mol_graphs: List[MolGraph]):
@@ -202,6 +210,7 @@ class BatchMolGraph:
         a2b = [[]]  # mapping from atom index to incoming bond indices
         b2a = [0]  # mapping from bond index to the index of the atom the bond is coming from
         b2revb = [0]  # mapping from bond index to the index of the reverse bond
+        matrix=[[]] # matrix of atom pair distances
         for mol_graph in mol_graphs:
             f_atoms.extend(mol_graph.f_atoms)
             f_bonds.extend(mol_graph.f_bonds)
@@ -218,8 +227,12 @@ class BatchMolGraph:
             self.n_atoms += mol_graph.n_atoms
             self.n_bonds += mol_graph.n_bonds
 
+            for a in range(mol_graph.n_atoms):
+                matrix.append(mol_graph.matrix[a])
+                
         self.max_num_bonds = max(1, max(len(in_bonds) for in_bonds in a2b))  # max with 1 to fix a crash in rare case of all single-heavy-atom mols
-
+        self.max_num_atoms = max([len(matrix[a]) for a in range(self.n_atoms)])
+        
         self.f_atoms = torch.FloatTensor(f_atoms)
         self.f_bonds = torch.FloatTensor(f_bonds)
         self.a2b = torch.LongTensor([a2b[a] + [0] * (self.max_num_bonds - len(a2b[a])) for a in range(self.n_atoms)])
@@ -227,7 +240,8 @@ class BatchMolGraph:
         self.b2revb = torch.LongTensor(b2revb)
         self.b2b = None  # try to avoid computing b2b b/c O(n_atoms^3)
         self.a2a = None  # only needed if using atom messages
-
+        self.matrix = torch.LongTensor([matrix[a] + [0] * (self.max_num_atoms - len(matrix[a])) for a in range(self.n_atoms)])
+        
     def get_components(self, atom_messages: bool = False) -> Tuple[torch.FloatTensor, torch.FloatTensor,
                                                                    torch.LongTensor, torch.LongTensor, torch.LongTensor,
                                                                    List[Tuple[int, int]], List[Tuple[int, int]]]:
@@ -245,7 +259,16 @@ class BatchMolGraph:
             f_bonds = self.f_bonds
 
         return self.f_atoms, f_bonds, self.a2b, self.b2a, self.b2revb, self.a_scope, self.b_scope
+    
+    def get_matrix(self) -> torch.LongTensor:
+        """
+        Gets distance matrix of all atom pairs
 
+        :return: A PyTorch tensor containing the topological distance matrix
+        """
+
+        return self.matrix
+    
     def get_b2b(self) -> torch.LongTensor:
         """
         Computes (if necessary) and returns a mapping from each bond index to all the incoming bond indices.

@@ -58,6 +58,8 @@ class MoleculeModel(nn.Module):
             first_linear_dim = args.features_size
         else:
             first_linear_dim = args.hidden_size
+            if args.aggregation=='append_dist':
+                first_linear_dim += args.hidden_size
             if args.use_input_features:
                 first_linear_dim += args.features_size
 

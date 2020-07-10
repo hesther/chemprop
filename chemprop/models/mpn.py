@@ -122,22 +122,52 @@ class MPNEncoder(nn.Module):
         atom_hiddens = self.dropout_layer(atom_hiddens)  # num_atoms x hidden
 
         # Readout
-        mol_vecs = []
-        for i, (a_start, a_size) in enumerate(a_scope):
-            if a_size == 0:
-                mol_vecs.append(self.cached_zero_vector)
-            else:
-                cur_hiddens = atom_hiddens.narrow(0, a_start, a_size)
-                mol_vec = cur_hiddens  # (num_atoms, hidden_size)
-                if self.aggregation=='mean':
-                    mol_vec = mol_vec.sum(dim=0) / a_size
-                elif self.aggregation=='sum':
-                    mol_vec = mol_vec.sum(dim=0)
-                elif self.aggregation=='norm':
-                    mol_vec = mol_vec.sum(dim=0) / self.aggregation_norm
-                mol_vecs.append(mol_vec)
+        if self.aggregation in ['mean','sum','norm']:
+            mol_vecs = []
+            for i, (a_start, a_size) in enumerate(a_scope):
+                if a_size == 0:
+                    mol_vecs.append(self.cached_zero_vector)
+                else:
+                    cur_hiddens = atom_hiddens.narrow(0, a_start, a_size)
+                    mol_vec = cur_hiddens  # (num_atoms, hidden_size)
+                    if self.aggregation=='mean':
+                        mol_vec = mol_vec.sum(dim=0) / a_size
+                    elif self.aggregation=='sum':
+                        mol_vec = mol_vec.sum(dim=0)
+                    elif self.aggregation=='norm':
+                        mol_vec = mol_vec.sum(dim=0) / self.aggregation_norm
+                    mol_vecs.append(mol_vec)
 
-        mol_vecs = torch.stack(mol_vecs, dim=0)  # (num_molecules, hidden_size)
+            mol_vecs = torch.stack(mol_vecs, dim=0)  # (num_molecules, hidden_size)
+
+        elif self.aggregation=='append_dist':
+            matrix=mol_graph.get_matrix() 
+            matrix=matrix.to(self.device) 
+            mol_vecs = []
+            dist_vecs=[]
+            for i, (a_start, a_size) in enumerate(a_scope):
+                dist_vec=torch.zeros(self.hidden_size)
+                if a_size == 0:
+                    mol_vecs.append(self.cached_zero_vector)
+                else:
+                    cur_hiddens = atom_hiddens.narrow(0, a_start, a_size)
+                    mol_vec = cur_hiddens  # (num_atoms, hidden_size)]
+
+                    for j in range(a_size):
+                        for k in range(a_size):
+                            if j!=k:
+                                topo_dist=matrix[a_start+j][k]
+                                if topo_dist>=self.depth:
+                                    dist_vec+=mol_vec[j]/topo_dist
+                    dist_vecs.append(dist_vec / a_size)
+                
+                    mol_vec = mol_vec.sum(dim=0) / a_size
+                    mol_vecs.append(mol_vec)
+
+            mol_vecs = torch.stack(mol_vecs, dim=0)  # (num_molecules, hidden_size)
+            dist_vecs = torch.stack(dist_vecs, dim=0)  # (num_molecules, hidden_size)
+            mol_vecs = torch.cat([mol_vecs, dist_vecs], dim=1)  # (num_molecules, 2*hidden_size)
+
         
         if self.use_input_features:
             features_batch = features_batch.to(mol_vecs)
